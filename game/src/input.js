@@ -1,53 +1,137 @@
-// Keyboard and pointer input. Held keys give a steering direction; one-shot presses (start or
-// restart, pause) are queued as bit flags and taken once by the loop, so a press between two
-// frames is never lost and never counted twice.
+// Input: a single set of listeners and two ways to interrogate it. Continuous controls (walking,
+// throttle, handbrake, run) are polled from the keys held at this instant. Discrete controls
+// (confirm, pause, interact, save, load) are latched into a bitmask and handed out exactly once, so a
+// tap landing between two frames is neither dropped nor acted on twice.
+//
+// Keys are watched on window rather than on the canvas, so the title card and the pause menu answer
+// before the canvas has ever been clicked.
 
-export const ACTION_CONFIRM = 1;
-export const ACTION_PAUSE = 2;
+export const ACT_CONFIRM = 1;
+export const ACT_PAUSE = 2;
+export const ACT_INTERACT = 4;
+export const ACT_SAVE = 8;
+export const ACT_LOAD = 16;
 
-const LEFT = new Set(['ArrowLeft', 'KeyA']);
-const RIGHT = new Set(['ArrowRight', 'KeyD']);
-const CONFIRM = new Set(['Space', 'Enter']);
-const PAUSE = new Set(['KeyP', 'Escape']);
+/** Keys the game claims: suppressing their default stops the page scrolling or tabbing away. */
+const WATCHED = new Set([
+  'ArrowUp',
+  'ArrowDown',
+  'ArrowLeft',
+  'ArrowRight',
+  'KeyW',
+  'KeyA',
+  'KeyS',
+  'KeyD',
+  'KeyE',
+  'KeyP',
+  'KeyL',
+  'KeyC',
+  'Space',
+  'ShiftLeft',
+  'ShiftRight',
+  'Enter',
+  'NumpadEnter',
+  'Escape',
+  'Digit1',
+  'Digit2',
+]);
 
 export function createInput(target) {
-  let left = false;
-  let right = false;
+  const held = new Set();
   let actions = 0;
 
-  window.addEventListener('keydown', (event) => {
-    if (LEFT.has(event.code)) left = true;
-    else if (RIGHT.has(event.code)) right = true;
-    else if (CONFIRM.has(event.code)) {
-      if (!event.repeat) actions |= ACTION_CONFIRM;
-    } else if (PAUSE.has(event.code)) {
-      if (!event.repeat) actions |= ACTION_PAUSE;
-    } else return;
+  function onKeyDown(event) {
+    if (!WATCHED.has(event.code)) return;
     event.preventDefault();
-  });
-  window.addEventListener('keyup', (event) => {
-    if (LEFT.has(event.code)) left = false;
-    else if (RIGHT.has(event.code)) right = false;
-  });
-  // A key released while the tab is hidden never sends keyup: let go of everything on blur.
-  window.addEventListener('blur', () => {
-    left = false;
-    right = false;
-  });
-  target.addEventListener('pointerdown', () => {
-    actions |= ACTION_CONFIRM;
-  });
+
+    const wasHeld = held.has(event.code);
+    held.add(event.code);
+
+    // Auto-repeat keeps the key available for polling, but must not fire its action over and over.
+    if (event.repeat) return;
+
+    switch (event.code) {
+      case 'Enter':
+      case 'NumpadEnter':
+      case 'Space':
+        // Space is both start on the menu and handbrake in a car; the loop tells the two apart.
+        actions |= ACT_CONFIRM;
+        break;
+      case 'Escape':
+      case 'KeyP':
+        actions |= ACT_PAUSE;
+        break;
+      case 'KeyE':
+        actions |= ACT_INTERACT;
+        break;
+      case 'Digit1':
+        actions |= ACT_SAVE;
+        break;
+      case 'Digit2':
+      case 'KeyL':
+        actions |= ACT_LOAD;
+        break;
+      case 'KeyC':
+        // Only a fresh press of C resumes a saved game.
+        if (!wasHeld) actions |= ACT_LOAD;
+        break;
+      default:
+        break;
+    }
+  }
+
+  function onKeyUp(event) {
+    if (!WATCHED.has(event.code)) return;
+    held.delete(event.code);
+  }
+
+  // A key released while the tab is hidden never fires keyup: drop everything on blur.
+  function onBlur() {
+    held.clear();
+  }
+
+  function onPointerDown() {
+    actions |= ACT_CONFIRM;
+  }
+
+  window.addEventListener('keydown', onKeyDown);
+  window.addEventListener('keyup', onKeyUp);
+  window.addEventListener('blur', onBlur);
+  if (target && target.addEventListener) target.addEventListener('pointerdown', onPointerDown);
 
   return {
-    /** -1 for left, 1 for right, 0 for neither or both. */
-    direction() {
-      return (right ? 1 : 0) - (left ? 1 : 0);
+    /** Direction being held, each component -1, 0 or 1. +y points down, so S gives {x: 0, y: 1}. */
+    move() {
+      let x = 0;
+      let y = 0;
+      if (held.has('KeyA') || held.has('ArrowLeft')) x -= 1;
+      if (held.has('KeyD') || held.has('ArrowRight')) x += 1;
+      if (held.has('KeyW') || held.has('ArrowUp')) y -= 1;
+      if (held.has('KeyS') || held.has('ArrowDown')) y += 1;
+      return { x, y };
     },
-    /** The one-shot presses since the last call, as ACTION_* flags. */
-    takeActions() {
+
+    /** Is this physical key down right now? e.g. down('Space') for the handbrake. */
+    down(code) {
+      return held.has(code);
+    },
+
+    /** Shift, read as the run modifier on foot. */
+    running() {
+      return held.has('ShiftLeft') || held.has('ShiftRight');
+    },
+
+    /** Every one-shot press since the last call, OR-ed together; the queue is then emptied. */
+    take() {
       const taken = actions;
       actions = 0;
       return taken;
+    },
+
+    /** Forget queued presses and held keys: used when a screen change makes them stale. */
+    clear() {
+      actions = 0;
+      held.clear();
     },
   };
 }
