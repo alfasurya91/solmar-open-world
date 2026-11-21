@@ -324,7 +324,7 @@ export function createRenderer(canvas, city) {
 
   /**
    * One building, painted as a block seen from above: the cast shadow, the sunlit south wall with
-   * its window grid, the east return turning away, the roof plate lifted clear of the walls, its
+   * its window grid, the east return turning away from the light, the roof plate lifted clear of the walls, its
    * parapet and its clutter, and — where the generator said so — a striped awning over the door.
    */
   function paintBuilding(g, building, seed) {

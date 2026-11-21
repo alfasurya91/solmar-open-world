@@ -1,36 +1,14 @@
-// Solmar's score and effects, synthesised at runtime from oscillators and shaped noise. There are no
-// audio files, so the whole soundtrack exists the moment the page loads. The AudioContext is built
-// lazily on the first call that needs it, and every export tolerates a missing context: main.js runs
-// updateAudio() on frame one, before the player has touched a key, and browsers refuse to start an
-// audio graph outside a user gesture.
-//
-// Exports used by main.js:
-//   createAudio()                     state object
-//   setEnabled(audio, on)             hard on/off (suspends the context)
-//   setMuted(audio, muted)            silent, but still running
-//   playSfx(audio, name)              engine, skid, crash, pickup, punch, shoot, siren,
-//                                     mission, success, click, arrest
-//   startMusic(audio) / stopMusic(audio)
-//   updateAudio(audio, world, dt)     continuous engine hum; pitch follows the driven car's speed
-//
-// This module imports nothing from the rest of the game and reads only `world.player.car.speed`.
+// Solmar audio: WebAudio synthesis — effects, looped music, engine hum tracking car speed.
+// No audio files; everything generated at runtime. AudioContext created lazily on first gesture.
 
-/** Bus levels against the master. The music sits deliberately under the effects. */
 const MUSIC_LEVEL = 0.3;
 const SFX_LEVEL = 0.55;
 const ENGINE_LEVEL = 0.14;
 
-/** Speed (world px/s) where the engine reaches top pitch — the car's top speed. */
 const TOP_SPEED = 320;
-
-/** Ambient loop tempo in beats per minute, and the root note (A1). */
 const TEMPO = 68;
 const ROOT = 55;
 
-/**
- * Audio state. `ctx` stays null until a gesture unlocks the page, so the graph is never built early;
- * every other field exists from the start so callers can read it before a sample is produced.
- */
 export function createAudio() {
   return {
     ctx: null,
@@ -41,7 +19,6 @@ export function createAudio() {
     noiseBuffer: null,
     enabled: true,
     muted: false,
-    // Continuous engine voice.
     engineOsc: null,
     engineSub: null,
     engineSubFilter: null,
@@ -52,7 +29,6 @@ export function createAudio() {
     engineActive: false,
     engineLevel: 0,
     lastSpeed: 0,
-    // Music scheduler.
     musicPlaying: false,
     musicRun: 0,
     musicTimer: null,
@@ -62,12 +38,10 @@ export function createAudio() {
   };
 }
 
-/** Build the context and its bus graph, or hand back the one already standing. */
 function ensureContext(audio) {
   if (!audio) return null;
 
   if (audio.ctx) {
-    // A suspended context stays suspended until a gesture resumes it; keep asking on every call.
     if (audio.ctx.state === 'suspended' && audio.enabled) audio.ctx.resume().catch(() => {});
     return audio.ctx;
   }
@@ -75,7 +49,7 @@ function ensureContext(audio) {
   const Ctor = typeof window !== 'undefined'
     ? (window.AudioContext || window.webkitAudioContext)
     : null;
-  if (!Ctor) return null; // No WebAudio here — a test runner or an old browser: stay silent.
+  if (!Ctor) return null;
 
   let ctx;
   try {
@@ -112,7 +86,6 @@ function ensureContext(audio) {
   return ctx;
 }
 
-/** Half a second of white noise, shared by every percussive effect. */
 function buildNoise(ctx, seconds) {
   const length = Math.max(1, Math.ceil(ctx.sampleRate * seconds));
   const buffer = ctx.createBuffer(1, length, ctx.sampleRate);
@@ -121,7 +94,6 @@ function buildNoise(ctx, seconds) {
   return buffer;
 }
 
-/** Turn the whole system on or off. Off suspends the context, so nothing keeps running. */
 export function setEnabled(audio, on) {
   if (!audio) return;
   audio.enabled = !!on;
@@ -130,7 +102,6 @@ export function setEnabled(audio, on) {
   if (audio.enabled) {
     audio.ctx.resume().catch(() => {});
     if (audio.musicPlaying) {
-      // Revive the loop on a single chain: drop any timer left from before the disable first.
       if (audio.musicTimer !== null) {
         clearTimeout(audio.musicTimer);
         audio.musicTimer = null;
@@ -141,8 +112,6 @@ export function setEnabled(audio, on) {
     return;
   }
 
-  // Disabling: silence the engine and stop scheduling. A suspended clock would otherwise queue a
-  // backlog of notes that all fire together on the next resume.
   stopEngine(audio, true);
   if (audio.musicTimer !== null) {
     clearTimeout(audio.musicTimer);
@@ -151,7 +120,6 @@ export function setEnabled(audio, on) {
   audio.ctx.suspend().catch(() => {});
 }
 
-/** Silence without tearing the graph down, so unmuting is instant. */
 export function setMuted(audio, muted) {
   if (!audio) return;
   audio.muted = !!muted;
@@ -163,10 +131,6 @@ export function setMuted(audio, muted) {
   if (audio.muted) stopEngine(audio, true);
 }
 
-/**
- * Play one named effect. Unknown names are ignored and a missing context is silence rather than a
- * throw: this is called from input handlers that may fire before the first gesture.
- */
 export function playSfx(audio, name) {
   if (!audio || !audio.enabled || audio.muted) return;
   const ctx = ensureContext(audio);
@@ -188,12 +152,6 @@ export function playSfx(audio, name) {
   }
 }
 
-// --- primitives ---------------------------------------------------------------------------------
-
-/**
- * One shaped oscillator note. `freq` is a number, or a [from, to] pair swept across `dur`. Every voice
- * disconnects itself when it stops, so nothing accumulates on the graph.
- */
 function tone(audio, {
   freq = 440,
   type = 'sine',
@@ -239,7 +197,6 @@ function tone(audio, {
   return osc;
 }
 
-/** A burst of shaped noise through a filter — the base of skids, crashes and impacts. */
 function noiseBurst(audio, {
   at = 0,
   dur = 0.2,
@@ -277,50 +234,41 @@ function noiseBurst(audio, {
   };
 }
 
-// --- effects ------------------------------------------------------------------------------------
-
-/** A throttle blip: quick rise, slower fall. The steady hum lives in updateAudio. */
 function engineRev(audio) {
   tone(audio, { freq: [90, 235], type: 'sawtooth', dur: 0.22, peak: 0.16, attack: 0.01 });
   tone(audio, { freq: [70, 110], type: 'square', at: 0.02, dur: 0.3, peak: 0.05 });
 }
 
-/** Tyres losing grip: a bright band of noise sliding downward. */
 function skid(audio) {
   noiseBurst(audio, { dur: 0.42, peak: 0.14, filter: 'bandpass', freq: 2600, freqTo: 700, q: 1.4 });
   noiseBurst(audio, { at: 0.03, dur: 0.3, peak: 0.06, filter: 'highpass', freq: 1800, q: 0.8 });
 }
 
-/** Metal and glass: a low thump with a rattle riding on top. */
 function crash(audio) {
   tone(audio, { freq: [70, 32], type: 'sine', dur: 0.3, peak: 0.34, attack: 0.004 });
   noiseBurst(audio, { dur: 0.26, peak: 0.16, filter: 'highpass', freq: 1500, q: 0.9 });
   noiseBurst(audio, { at: 0.02, dur: 0.14, peak: 0.08, filter: 'bandpass', freq: 3200, q: 3 });
 }
 
-/** A bright three-step chime for collecting something. */
 function pickup(audio) {
-  const notes = [784, 1047, 1319]; // G5 C6 E6
+  const notes = [784, 1047, 1319];
   notes.forEach((freq, i) => {
     tone(audio, { freq, type: 'sine', at: i * 0.055, dur: 0.18, peak: 0.15 });
     tone(audio, { freq: freq * 2, type: 'triangle', at: i * 0.055, dur: 0.09, peak: 0.04 });
   });
 }
 
-/** Fist on body: a dull transient with no tail. */
 function punchHit(audio) {
   tone(audio, { freq: [150, 62], type: 'triangle', dur: 0.12, peak: 0.24, attack: 0.003 });
   noiseBurst(audio, { dur: 0.07, peak: 0.09, filter: 'lowpass', freq: 900, q: 0.7 });
 }
 
-/** A single shot: the crack first, then the room answering. */
 function gunshot(audio) {
   noiseBurst(audio, { dur: 0.09, peak: 0.22, filter: 'highpass', freq: 1400, q: 0.7 });
   tone(audio, { freq: [260, 70], type: 'square', dur: 0.07, peak: 0.14, attack: 0.002 });
   noiseBurst(audio, { at: 0.05, dur: 0.28, peak: 0.045, filter: 'bandpass', freq: 700, freqTo: 260, q: 1.1 });
 }
 
-/** One yelp of a two-tone siren. Callers repeat it for a wail. */
 function siren(audio) {
   const ctx = audio.ctx;
   const t0 = ctx.currentTime;
@@ -346,43 +294,33 @@ function siren(audio) {
   };
 }
 
-/** New job: a rising four-note figure. */
 function missionSting(audio) {
-  const notes = [261.63, 329.63, 392.0, 523.25]; // C4 E4 G4 C5
+  const notes = [261.63, 329.63, 392.0, 523.25];
   notes.forEach((freq, i) => {
     tone(audio, { freq, type: 'triangle', at: i * 0.08, dur: 0.3, peak: 0.11 });
   });
 }
 
-/** Job done: a warm major chord that rings out. */
 function successSting(audio) {
-  const notes = [392.0, 523.25, 659.25]; // G4 C5 E5
+  const notes = [392.0, 523.25, 659.25];
   notes.forEach((freq, i) => {
     tone(audio, { freq, type: 'sine', at: i * 0.04, dur: 0.55, peak: 0.12, attack: 0.01 });
   });
   tone(audio, { freq: 1046.5, type: 'triangle', at: 0.12, dur: 0.4, peak: 0.05 });
 }
 
-/** Menu tick. */
 function click(audio) {
   tone(audio, { freq: 1250, type: 'sine', dur: 0.028, peak: 0.06, attack: 0.002 });
 }
 
-/** Busted: three descending notes, heavier than the success chord. */
 function arrestSting(audio) {
-  const notes = [329.63, 293.66, 246.94]; // E4 D4 B3
+  const notes = [329.63, 293.66, 246.94];
   notes.forEach((freq, i) => {
     tone(audio, { freq, type: 'triangle', at: i * 0.11, dur: 0.5, peak: 0.14, attack: 0.01 });
   });
   tone(audio, { freq: [80, 45], type: 'sine', at: 0.3, dur: 0.7, peak: 0.12 });
 }
 
-// --- music --------------------------------------------------------------------------------------
-
-/**
- * Start the ambient loop. Repeated calls are harmless: if it is already playing, this returns.
- * One bar is scheduled at a time from a JS timer, which is accurate enough at this tempo.
- */
 export function startMusic(audio) {
   if (!audio || !audio.enabled || audio.muted || audio.musicPlaying) return;
   const ctx = ensureContext(audio);
@@ -396,7 +334,6 @@ export function startMusic(audio) {
   scheduleMusic(audio, audio.musicRun);
 }
 
-/** Stop scheduling new bars. Notes already in flight ring out on their own. */
 export function stopMusic(audio) {
   if (!audio) return;
   audio.musicPlaying = false;
@@ -407,10 +344,6 @@ export function stopMusic(audio) {
   }
 }
 
-/**
- * Schedule one bar and queue the next. `run` is a generation counter: stopping or restarting bumps
- * it, so a timer left in flight by an older run can never double up on the loop.
- */
 function scheduleMusic(audio, run) {
   if (!audio.musicPlaying || run !== audio.musicRun || !audio.ctx || !audio.musicBus) return;
 
@@ -420,7 +353,6 @@ function scheduleMusic(audio, run) {
   const start = Math.max(ctx.currentTime + 0.05, audio.musicStart);
   audio.musicStart = start + bar;
 
-  // Bass: root / fifth / octave / fifth, one note per beat, two octaves down.
   const bassSteps = [0, 7, 12, 7];
   for (let i = 0; i < bassSteps.length; i += 1) {
     const idx = (audio.bassIndex + i) % bassSteps.length;
@@ -428,7 +360,6 @@ function scheduleMusic(audio, run) {
     bassNote(audio, start + i * beat, freq, beat * 0.92);
   }
 
-  // Arpeggio: a minor triad climbing and falling across the bar.
   const arpSteps = [0, 3, 7, 12, 7, 3];
   const arpRoot = ROOT * 4;
   const perBeat = 2;
@@ -451,7 +382,6 @@ function scheduleMusic(audio, run) {
   }, wait);
 }
 
-/** Sub-bass note with a soft attack, carrying the root movement. */
 function bassNote(audio, at, freq, dur) {
   const ctx = audio.ctx;
   const osc = ctx.createOscillator();
@@ -471,7 +401,6 @@ function bassNote(audio, at, freq, dur) {
   };
 }
 
-/** Soft plucked arpeggio note. */
 function arpNote(audio, at, freq, dur) {
   const ctx = audio.ctx;
   const osc = ctx.createOscillator();
@@ -491,12 +420,6 @@ function arpNote(audio, at, freq, dur) {
   };
 }
 
-// --- continuous engine --------------------------------------------------------------------------
-
-/**
- * Per-step audio: the engine note tracks whatever car the player is driving. This never creates a
- * context — before the player's first input it returns at once, so autoplay rules stay satisfied.
- */
 export function updateAudio(audio, world, dt) {
   if (!audio || !audio.ctx || !audio.enabled || audio.muted) {
     if (audio) stopEngine(audio, false);
@@ -506,7 +429,6 @@ export function updateAudio(audio, world, dt) {
   const car = world && world.player ? world.player.car : null;
   const speed = car && Number.isFinite(car.speed) ? Math.abs(car.speed) : 0;
 
-  // Below walking pace the engine drops out entirely; a parked car should be silent.
   if (!car || speed < 12) {
     stopEngine(audio, false);
     return;
@@ -518,8 +440,8 @@ export function updateAudio(audio, world, dt) {
   const ctx = audio.ctx;
   const now = ctx.currentTime;
   const smooth = Math.min(0.25, Math.max(0.01, (Number.isFinite(dt) ? dt : 0.016) * 6));
-  const pitch = 54 + load * 168;      // 54 Hz idle .. 222 Hz flat out
-  const wobble = 17 + load * 13;      // tremolo rate, 17..30 Hz
+  const pitch = 54 + load * 168;
+  const wobble = 17 + load * 13;
   const level = 0.05 + load * ENGINE_LEVEL * 0.9;
 
   if (audio.engineOsc) audio.engineOsc.frequency.setTargetAtTime(pitch, now, smooth);
@@ -531,7 +453,6 @@ export function updateAudio(audio, world, dt) {
   audio.lastSpeed = car ? car.speed : 0;
 }
 
-/** Build the engine voice: a saw, a sub octave, and a tremolo on the saw's pitch. */
 function startEngine(audio, load) {
   const ctx = audio.ctx;
   const now = ctx.currentTime;
@@ -545,7 +466,6 @@ function startEngine(audio, load) {
   sub.type = 'square';
   sub.frequency.value = pitch * 0.5;
 
-  // The sub is quiet and filtered down so it reads as body, not buzz.
   const subFilter = ctx.createBiquadFilter();
   subFilter.type = 'lowpass';
   subFilter.frequency.value = 220;
@@ -554,7 +474,6 @@ function startEngine(audio, load) {
   const lfoGain = ctx.createGain();
   lfo.type = 'sine';
   lfo.frequency.value = 17 + load * 13;
-  // Tremolo depth stays a fraction of the note so the pitch never collapses.
   lfoGain.gain.value = pitch * 0.03;
   lfo.connect(lfoGain);
   lfoGain.connect(osc.frequency);
@@ -592,7 +511,6 @@ function startEngine(audio, load) {
   audio.engineLevel = 0.06 + load * ENGINE_LEVEL;
 }
 
-/** Fade the engine out and tear the voice down. `hard` cuts it at once (mute / disable). */
 function stopEngine(audio, hard) {
   if (!audio || !audio.engineActive) return;
   const ctx = audio.ctx;
@@ -615,9 +533,7 @@ function stopEngine(audio, hard) {
     const voice = voices[i];
     try {
       voice.stop(now + fade + 0.01);
-    } catch (err) {
-      // Already stopped, or never started: nothing to do.
-    }
+    } catch (err) {}
     voice.onended = () => voice.disconnect();
   }
 

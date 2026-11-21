@@ -1,32 +1,11 @@
-// Solmar job queue. Five story jobs play in order, then one repeatable free-roam run takes over for
-// as long as the player keeps driving. Nothing here draws: the module is pure bookkeeping and only
-// talks to the game through the two hooks it was handed at construction.
-//
-// Public surface (main.js imports exactly these):
-//   createMissions(city, rng, { onMissionComplete, onObjective }) -> state
-//   startNextMission(state, world)    arm the next job; returns the mission or null
-//   updateMissions(state, world, dt)  advance one fixed step, fire the hooks
-//   getObjective(state, world)        -> objective card | null
-//   getCurrentMission(state)          -> armed job, else the next one due
-//   resetMissions(state)              back to story job 1
-//
-// Money is main.js's business. A finished job reports itself once through onMissionComplete; the
-// `paid` map is the gate that keeps a replayed or duplicated completion from paying twice.
-//
-// Job kinds and how they finish:
-//   reach    inside `radius` of the target point
-//   deliver  inside `radius` of the drop point, and on foot
-//   chase    get within `catchRadius` of the fleeing car before it covers `chaseDistance`
+// Solmar missions. Five story missions in order, then one repeatable free-roam mission.
+// Pure bookkeeping — no rendering. Talks to the game only through hooks passed at construction.
 
 import { clamp, distance, distance2 } from './utils.js';
 
-/** Fallback arrival radius, in world pixels, for jobs that do not set their own. */
 const DEFAULT_RADIUS = 52;
-
-/** How far ahead of the player, in pixels, the fleeing car starts a pursuit. */
 const CHASE_LEAD = 230;
 
-/** Midpoint of a { x, y, w, h } rect, or `fallback` when the rect is missing or unusable. */
 function centreOf(rect, fallback) {
   if (!rect || !Number.isFinite(rect.x) || !Number.isFinite(rect.w)) {
     return { x: fallback.x, y: fallback.y };
@@ -34,11 +13,6 @@ function centreOf(rect, fallback) {
   return { x: rect.x + rect.w / 2, y: rect.y + rect.h / 2 };
 }
 
-/**
- * Fresh run state. The third argument carries main.js's hooks and is validated here, so every later
- * call reports through exactly one callback. `paid` and `attempts` are prototype-less maps keyed by
- * mission id (free-roam runs additionally carry a run number).
- */
 export function createMissions(city, rng, options = {}) {
   const opts = options && typeof options === 'object' ? options : {};
   return {
@@ -49,31 +23,22 @@ export function createMissions(city, rng, options = {}) {
     storyIndex: 0,
     freeRoamIndex: 0,
     freeRoamDone: 0,
-    active: null,               // { mission, phase, target, chaseCar, timer, tries, runId, data }
-    completed: [],              // ids of finished story jobs, in order
-    paid: Object.create(null),  // id or id#run -> true once reported to main.js
+    active: null,
+    completed: [],
+    paid: Object.create(null),
     attempts: Object.create(null),
     onMissionComplete: typeof opts.onMissionComplete === 'function' ? opts.onMissionComplete : null,
     onObjective: typeof opts.onObjective === 'function' ? opts.onObjective : null,
   };
 }
 
-/** The five story jobs in order, each anchored to a landmark of the generated city. */
 function buildStoryMissions(city) {
   const { pier, promenade, downtown, beach, parks, lots, height } = city;
 
-  // Where the beach road meets the west end of the pier deck.
   const pierEntry = () => ({ x: pier.x + 40, y: pier.y + pier.h / 2 });
-
-  // The generator lays the first park and the first lot down early, so both are stable for a seed
-  // and both are a short drive out of downtown.
   const parkCentre = () => centreOf(parks && parks[0], downtown);
   const lotCentre = () => centreOf(lots && lots[0], downtown);
-
-  // South tip of the promenade, a stride in from the railing.
   const promenadeSouth = () => ({ x: promenade.x + 22, y: height - 118 });
-
-  // North end of the beach road, out in the sand: the pursuit starts here.
   const beachRoadNorth = () => ({ x: beach.x + 130, y: downtown.y - 380 });
 
   return [
@@ -156,10 +121,6 @@ function buildStoryMissions(city) {
   ];
 }
 
-/**
- * The repeatable job that follows the story. It reuses the opener's pier drop so the loop is always
- * solvable, and lives in its own list because it is armed over and over rather than exhausted.
- */
 function buildFreeRoamMissions(city) {
   const { pier } = city;
   return [
@@ -181,7 +142,6 @@ function buildFreeRoamMissions(city) {
   ];
 }
 
-/** The armed job, or — with nothing armed — the job that would start next. */
 export function getCurrentMission(missions) {
   if (!missions || !missions.story) return null;
   if (missions.active) return missions.active.mission;
@@ -192,12 +152,6 @@ export function getCurrentMission(missions) {
   return null;
 }
 
-/**
- * The objective card:
- *   { id, title, pay, detail, distance, x, y, radius, kind, onFoot, dialog }
- * `x`/`y` go straight to the renderer's marker, so every card carries them — the chase card's point
- * rides the fleeing car. Null means "no job armed", which is how main.js clears world.objective.
- */
 export function getObjective(missions, world) {
   const active = missions ? missions.active : null;
   if (!active) return null;
@@ -226,11 +180,6 @@ export function getObjective(missions, world) {
   };
 }
 
-/**
- * Arm the next job. Story jobs run in order, then the free-roam job comes round forever. Returns the
- * mission that was armed, or null when nothing is left. main.js calls this at boot and after a load,
- * so without it the run would have no first job.
- */
 export function startNextMission(missions, world) {
   if (!missions || !missions.story) return null;
   if (missions.active) return missions.active.mission;
@@ -248,7 +197,7 @@ export function startNextMission(missions, world) {
 
   const active = {
     mission,
-    phase: 'active', // 'active' | 'completed' | 'failed'
+    phase: 'active',
     target,
     chaseCar: null,
     timer: 0,
@@ -259,7 +208,6 @@ export function startNextMission(missions, world) {
 
   if (mission.type === 'chase') {
     active.chaseCar = spawnChaseCar(mission, target, missions.city, world && world.player);
-    // The card follows the rival, so aim it at the car before the first frame is drawn.
     active.target = { x: active.chaseCar.x, y: active.chaseCar.y };
   }
 
@@ -268,7 +216,6 @@ export function startNextMission(missions, world) {
   return mission;
 }
 
-/** Choose the next job without arming it: next story job, else the free-roam loop. */
 function pickNext(missions) {
   if (missions.storyIndex < missions.story.length) {
     return missions.story[missions.storyIndex];
@@ -281,7 +228,6 @@ function pickNext(missions) {
   return null;
 }
 
-/** Evaluate a target (closure or point), falling back to downtown if the city data is incomplete. */
 function resolveTarget(mission, missions, world) {
   const fallback = (world && world.city && world.city.downtown) || missions.city.downtown;
   let point = null;
@@ -296,11 +242,6 @@ function resolveTarget(mission, missions, world) {
   return { x: point.x, y: point.y };
 }
 
-/**
- * Give the rival a head start relative to wherever the player is, kept inside the sand strip and
- * clear of the water. Spawning off the player is what keeps the chase winnable wherever they arrive;
- * a fixed city point could strand the rival far away with seconds left on the clock.
- */
 function spawnChaseCar(mission, target, city, player) {
   const beach = city.beach;
   const minX = beach.x + 60;
@@ -311,7 +252,7 @@ function spawnChaseCar(mission, target, city, player) {
   return {
     x: clamp(baseX + 70, minX, maxX),
     y: clamp(baseY - CHASE_LEAD, 110, city.height - 420),
-    angle: Math.PI / 2, // south, down the beach road
+    angle: Math.PI / 2,
     speed: mission.chaseSpeed ?? 230,
     travelled: 0,
     maxDistance: mission.chaseDistance ?? 1200,
@@ -321,7 +262,6 @@ function spawnChaseCar(mission, target, city, player) {
   };
 }
 
-/** Advance the armed job by one fixed step, then settle the completed / failed phases. */
 export function updateMissions(missions, world, dt) {
   if (!missions || !missions.story) return;
   if (!missions.active) {
@@ -351,11 +291,9 @@ export function updateMissions(missions, world, dt) {
     return;
   }
 
-  // Re-publish every step so the distance readout and the chase marker stay honest.
   missions.onObjective?.(getObjective(missions, world));
 }
 
-/** Drive the rival south with a gentle weave, and test whether the player has caught it. */
 function updateChase(missions, active, player, dt) {
   const car = active.chaseCar;
   const city = missions.city;
@@ -366,7 +304,6 @@ function updateChase(missions, active, player, dt) {
   const aheadY = car.y + 190;
   const desired = Math.atan2(aheadY - car.y, laneX - car.x);
 
-  // Ease the heading toward the lane rather than snapping, so the rival reads as driven.
   const turn = 1 - Math.exp(-6 * dt);
   car.angle += shortestTurn(car.angle, desired) * turn;
 
@@ -393,7 +330,6 @@ function updateChase(missions, active, player, dt) {
   if (car.travelled >= car.maxDistance) active.phase = 'failed';
 }
 
-/** Reach / deliver test: inside the radius, and on foot when the job demands it. */
 function checkArrival(active, mission, player) {
   if (!player || !Number.isFinite(player.x) || !Number.isFinite(player.y)) return;
   const target = active.target;
@@ -406,11 +342,6 @@ function checkArrival(active, mission, player) {
   if (arrived && onFootOk) active.phase = 'completed';
 }
 
-/**
- * Retire the job and report it exactly once. Wallet and job counter belong to main.js, so this only
- * moves the queue along; the next job arms on the following updateMissions call. `paid` is the gate:
- * story jobs key on their id, free-roam runs on id plus run number.
- */
 function completeMission(missions, world) {
   const active = missions.active;
   if (!active) return;
@@ -432,20 +363,14 @@ function completeMission(missions, world) {
   if (!alreadyPaid) missions.onMissionComplete?.(mission, world);
 }
 
-/**
- * A failed chase is retried, not skipped: the queue does not advance, and the same job arms again on
- * this very step with a fresh rival car.
- */
 function failMission(missions, world) {
   const mission = missions.active ? missions.active.mission : null;
   missions.active = null;
   missions.onObjective?.(null);
   if (!mission) return;
-  // Re-arm immediately so the objective card never blinks out for a frame.
   startNextMission(missions, world);
 }
 
-/** Shortest signed turn from one heading to another, in (-PI, PI]. */
 function shortestTurn(from, to) {
   let d = (to - from) % (Math.PI * 2);
   if (d > Math.PI) d -= Math.PI * 2;
@@ -453,7 +378,6 @@ function shortestTurn(from, to) {
   return d;
 }
 
-/** Wipe all progress: story job 1, no completions, no payouts, no armed job. */
 export function resetMissions(missions) {
   if (!missions || !missions.story) return;
   missions.storyIndex = 0;

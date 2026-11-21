@@ -1,19 +1,11 @@
-// The player's two ways of hurting someone: a bare fist, and — once it is found in the park — a
-// pistol.
-//
-// A punch is an arc test in front of the body: cheap, close, and it can be thrown into empty air.
-// A round is a swept segment: each step the bullet is traced from where it was to where it now is,
-// so nothing moving at a thousand units a second can slip between two frames unnoticed.
-//
-// The module reads no input and paints nothing. main.js decides when a blow is thrown; render.js
-// reads the public fields back out (`fists`, `muzzle`, `bullets`, `particles`, `sparks`, `pickups`).
-// The only channel outward is the callback trio: onAttack, onHit, playerHurt.
+// The player's two ways of hurting: bare fist, and a pistol found in the park.
+// Exports: createCombat, placePistol, givePistol, canAttack, updateCombat, punch, shoot, policeFire, resetCombat
 
 import { COLORS } from './config.js';
 import { clamp, distance } from './utils.js';
 import { carCircles } from './vehicles.js';
 
-/** A fist: short reach, wide arc, and a rhythm slow enough that mashing is not a strategy. */
+/** Fist: short reach, wide arc, slow enough that mashing isn't a strategy. */
 const KNUCKLE = {
   cooldown: 0.34,
   swing: 0.18,
@@ -25,7 +17,7 @@ const KNUCKLE = {
   maxTargets: 2,
 };
 
-/** The pistol: flat, fast, and it reloads itself once the magazine runs dry. */
+/** Pistol: flat, fast, auto-reloads when magazine empties. */
 const SIDEARM = {
   cooldown: 0.2,
   flash: 0.075,
@@ -42,17 +34,17 @@ const SIDEARM = {
   maxBullets: 40,
 };
 
-/** Decoration is capped: an effect pool must never grow without bound in a long fight. */
+/** Effect caps — never unbounded growth. */
 const EFFECTS = {
   maxParticles: 180,
   maxSparks: 60,
   sparkLife: 0.5,
 };
 
-/** How close the body has to pass for the pistol on the grass to be picked up. */
+/** Pickup reach for the pistol on the ground. */
 const PICKUP_REACH = 26;
 
-/** An officer's pistol: ranged, less accurate with distance, and never a one-shot kill. */
+/** Officer's return fire: ranged, less accurate at distance, never one-shot. */
 const SERVICE_FIRE = {
   reach: 420,
   speedShare: 0.7,
@@ -64,22 +56,18 @@ const SERVICE_FIRE = {
   damageSpread: 6,
 };
 
-/**
- * Build the weapons. `city` is what rounds stop against and where the drop is placed; `rng` is the
- * world's own seeded stream, so spread and sparks replay identically. `options` carries
- * `onAttack`, `onHit` and `playerHurt`.
- */
+/** Build the combat state. `city` for collision, `rng` for deterministic spread/sparks. */
 export function createCombat(city, rng, options = {}) {
   return {
     city,
     rng,
 
-    // The swing the renderer draws, and the cooldown gating the next one.
+    // Fist state
     fists: false,
     fistTimer: 0,
     fistCooldown: 0,
 
-    // The pistol: trigger discipline, the flash, the magazine and the reload behind it.
+    // Pistol state
     gunCooldown: 0,
     muzzle: 0,
     hasGun: false,
@@ -87,23 +75,22 @@ export function createCombat(city, rng, options = {}) {
     reload: 0,
     reloading: false,
 
+    // Projectiles & effects
     bullets: [],
     particles: [],
-    sparks: [], // short-lived hit markers: {x, y, life, max, kind}
+    sparks: [],   // {x, y, life, max, kind}
     hits: 0,
     shots: 0,
     pickups: [],
 
-    // Seams main.js fills in.
+    // Callbacks filled by main.js
     onAttack: options.onAttack ?? null, // (kind) => void
-    onHit: options.onHit ?? null, // (target, amount, kind) => void
+    onHit: options.onHit ?? null,       // (target, amount, kind) => void
     playerHurt: options.playerHurt ?? null, // (amount) => void
   };
 }
 
-// --- The pistol on the ground -----------------------------------------------------------------
-
-/** Drop the pistol in the first park, a little south of its middle, where a stroll will find it. */
+/** Drop the pistol in the first park, south of center. */
 export function placePistol(combat, city, rng) {
   const park = city.parks[0] ?? null;
   const spot = park
@@ -118,13 +105,13 @@ export function placePistol(combat, city, rng) {
     taken: false,
   };
 
-  // One pistol, one spot: a restarted run replaces the old drop rather than stacking a second.
+  // One pistol, one spot: replace any existing pistol drop.
   combat.pickups = combat.pickups.filter((item) => item.kind !== 'pistol');
   combat.pickups.push(drop);
   return drop;
 }
 
-/** Hand the pistol over with a full magazine and a clear chamber. */
+/** Hand over the pistol with a full magazine. */
 export function givePistol(combat) {
   combat.hasGun = true;
   combat.ammo = SIDEARM.magazine;
@@ -132,14 +119,12 @@ export function givePistol(combat) {
   combat.reloading = false;
 }
 
-/** Whether the player may attack at all right now: on foot, and not behind a wheel. */
+/** Player may attack only when on foot. */
 export function canAttack(combat, world) {
   return !world.player.car;
 }
 
-// --- The step ---------------------------------------------------------------------------------
-
-/** Advance the weapons: timers, the magazine, whatever is in the air, and the drop on the grass. */
+/** Advance weapons: timers, magazine, bullets in flight, ground pickup. */
 export function updateCombat(combat, world, dt) {
   tick(combat, dt);
   stepOnPickup(combat, world);
@@ -159,12 +144,12 @@ function tick(combat, dt) {
   combat.reload = Math.max(0, combat.reload - dt);
   if (combat.reload > 0) return;
 
-  // Magazine seated: the pistol is live again and the empty-gun beat is over.
+  // Reload complete: magazine seated, pistol live again.
   combat.reloading = false;
   combat.ammo = SIDEARM.magazine;
 }
 
-/** Walk over the dropped pistol and it is yours. */
+/** Walk over the dropped pistol to pick it up. */
 function stepOnPickup(combat, world) {
   if (combat.hasGun) return;
 
@@ -179,12 +164,7 @@ function stepOnPickup(combat, world) {
   }
 }
 
-// --- Fists ------------------------------------------------------------------------------------
-
-/**
- * Throw a punch. True whenever a swing happened — which is not the same as landing one: a whiff
- * still pays the cooldown, so mashing never out-paces one well-timed blow.
- */
+/** Throw a punch. Returns true if swing happened (cooldown paid even on whiff). */
 export function punch(combat, world) {
   const player = world.player;
   if (player.car) return false;
@@ -211,7 +191,7 @@ export function punch(combat, world) {
     if (landed >= KNUCKLE.maxTargets) break;
   }
 
-  // A swing into open air still meets the world: a parked car rings under the knuckles.
+  // Whiff still rings parked cars.
   if (landed === 0) rapOnCar(combat, world, player);
   return true;
 }
@@ -225,20 +205,14 @@ function rapOnCar(combat, world, player) {
   }
 }
 
-// --- The pistol -------------------------------------------------------------------------------
-
-/**
- * Fire along the way the player faces. True when a round actually left the barrel; a dry magazine
- * starts its reload instead, and the trigger stays dead until that reload is done.
- */
+/** Fire the pistol along player's facing. True if round left barrel. */
 export function shoot(combat, world) {
   const player = world.player;
   if (player.car) return false;
   if (!combat.hasGun) return false;
   if (combat.reloading) return false;
 
-  // Checked before the cooldown on purpose: the pull that finds the chamber empty is the pull that
-  // seats a fresh magazine, rather than a dead trigger the player has to press twice.
+  // Empty magazine starts reload on this pull, not next.
   if (combat.ammo <= 0) {
     beginReload(combat);
     return false;
@@ -266,11 +240,7 @@ function beginReload(combat) {
   combat.ammo = 0;
 }
 
-/**
- * An officer fires back at a player on foot. The tracer is cosmetic: the hit is rolled here, because
- * a shooter four hundred units away should still be able to miss. Damage goes out through
- * `playerHurt`, so a player's health remains main.js's business.
- */
+/** Officer fires back at player on foot. Hit rolled here; damage via playerHurt. */
 export function policeFire(combat, world, officer) {
   const player = world.player;
   if (player.car) return false;
@@ -288,7 +258,7 @@ export function policeFire(combat, world, officer) {
   launch(combat, fromX, fromY, angle, SERVICE_FIRE.speedShare, true);
   smoke(combat, fromX, fromY, angle);
 
-  // Close and steady hurts most; the floor keeps a distant officer a nuisance, not a sniper.
+  // Close and steady hurts most; distant officers are a nuisance, not snipers.
   const chance = clamp(
     SERVICE_FIRE.accuracyBase - gap / SERVICE_FIRE.accuracyFalloff,
     SERVICE_FIRE.minChance,
@@ -303,7 +273,7 @@ export function policeFire(combat, world, officer) {
   return true;
 }
 
-/** Put one round into the air. `slow` scales the speed for an officer's load. */
+/** Put one round into the air. `slow` scales speed for officer load. */
 function launch(combat, x, y, angle, slow, hostile) {
   const speed = SIDEARM.bulletSpeed * slow;
 
@@ -320,8 +290,7 @@ function launch(combat, x, y, angle, slow, hostile) {
   if (combat.bullets.length > SIDEARM.maxBullets) combat.bullets.shift();
 }
 
-// --- Rounds in flight -------------------------------------------------------------------------
-
+/** Step all bullets: swept segment collision vs people, cars, scenery. */
 function flyBullets(combat, world, dt) {
   const alive = [];
   const people = inReach(world);
@@ -335,15 +304,16 @@ function flyBullets(combat, world, dt) {
 
     if (bullet.life <= 0) continue;
 
-    // Walls, trunks and lamp posts stop a round before it reaches anyone behind them.
+    // Scenery stops rounds.
     if (meetsScenery(combat, bullet)) continue;
 
-    // A hostile tracer was already rolled in policeFire; it only has to look like it was fired.
+    // Friendly bullets hit people; hostile bullets were already rolled in policeFire.
     if (!bullet.hostile && meetsPerson(combat, world, bullet, people)) continue;
 
+    // Cars stop bullets.
     if (meetsCar(combat, world, bullet)) continue;
 
-    // The map's own edge: a round leaving Solmar strikes the last wall it can see.
+    // World edge.
     if (bullet.x < 4 || bullet.y < 4 || bullet.y > combat.city.height - 4) {
       spark(combat, bullet.x, bullet.y, 'wall');
       continue;
@@ -367,7 +337,6 @@ function meetsScenery(combat, bullet) {
 
 function meetsPerson(combat, world, bullet, people) {
   for (const target of people) {
-    // A body already downed earlier this step is nothing for a round to stop on.
     if (target.hp <= 0 || target.down === true) continue;
 
     const reach = (target.radius ?? 11) + SIDEARM.bulletRadius;
@@ -399,7 +368,7 @@ function meetsCar(combat, world, bullet) {
   return false;
 }
 
-/** Everyone a fist or a round may reach: officers still standing, and the crowd. */
+/** All living targets a fist or bullet can reach. */
 function inReach(world) {
   const list = [];
 
@@ -412,9 +381,7 @@ function inReach(world) {
   return list;
 }
 
-// --- Impacts ----------------------------------------------------------------------------------
-
-/** Land one blow: hurt, shove, mark, report. A body out of hit points goes down for good. */
+/** Land a blow: hurt, shove, mark, report. Dead bodies go down for good. */
 function strike(combat, world, target, amount, kind, nx, ny) {
   combat.hits += 1;
 
@@ -440,10 +407,7 @@ function strike(combat, world, target, amount, kind, nx, ny) {
   }
 }
 
-/**
- * Does the segment from (x1, y1) to (x2, y2) come within `radius` of (cx, cy)? This is the shell of
- * a fast round's path; without it a bullet would step clean over a body between frames.
- */
+/** Segment vs circle: swept path so fast bullets can't slip between frames. */
 function segmentHits(x1, y1, x2, y2, cx, cy, radius) {
   const dx = x2 - x1;
   const dy = y2 - y1;
@@ -453,7 +417,7 @@ function segmentHits(x1, y1, x2, y2, cx, cy, radius) {
   return distance(x1 + dx * along, y1 + dy * along, cx, cy) <= radius;
 }
 
-/** A round against a city collider — a rectangle, or a round trunk as its bounding box. */
+/** Bullet vs city collider (rect or circle trunk as bbox). */
 function overlaps(x, y, radius, collider) {
   const box = collider.kind === 'circle'
     ? { x: collider.x - collider.r, y: collider.y - collider.r, w: collider.r * 2, h: collider.r * 2 }
@@ -466,7 +430,7 @@ function overlaps(x, y, radius, collider) {
   return dx * dx + dy * dy <= radius * radius;
 }
 
-/** Shortest signed turn, so an arc test never trips over the seam at PI. */
+/** Shortest signed turn — arc test doesn't trip over PI seam. */
 function shortestTurn(angle) {
   let d = angle % (Math.PI * 2);
   if (d > Math.PI) d -= Math.PI * 2;
@@ -474,8 +438,7 @@ function shortestTurn(angle) {
   return d;
 }
 
-// --- Effects ----------------------------------------------------------------------------------
-
+/** Effects. */
 function spark(combat, x, y, kind) {
   combat.sparks.push({ x, y, life: EFFECTS.sparkLife, max: EFFECTS.sparkLife, kind });
   if (combat.sparks.length > EFFECTS.maxSparks) combat.sparks.shift();
@@ -547,13 +510,7 @@ function fade(combat, dt) {
   }
 }
 
-// --- Reset ------------------------------------------------------------------------------------
-
-/**
- * Clear the trace of a run: nothing airborne, no marks left on the ground, no cooldown carried over.
- * The pistol itself, its magazine and the drop in the park stay — those are run state, not leftover
- * gunfire, and main.js re-places the drop itself when it restarts.
- */
+/** Clear gunfire trace for a new run. Pistol, magazine, and park drop persist. */
 export function resetCombat(combat) {
   combat.bullets = [];
   combat.particles = [];

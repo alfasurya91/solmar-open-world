@@ -1,4 +1,4 @@
-// Solmar, build N7-S1 (foundation): config, utils, city, input and save rewritten from their reference specs with identical behavior and exports; this entry copies game/ and screenshots/ to /output and writes the dossier via vendor/makefun-game.ts (MAKEFUN_OUTPUT_DIR overrides /output; `node serve.ts` serves locally).
+// Solmar, build N10-S1 (foundation): config, utils, city, input and save rewritten from their reference specs with identical behavior and exports; this entry copies game/ and screenshots/ to /output and writes the dossier via vendor/makefun-game.ts (MAKEFUN_OUTPUT_DIR overrides /output; `node serve.ts` serves locally).
 
 import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';

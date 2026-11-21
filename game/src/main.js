@@ -129,7 +129,9 @@ const world = {
   time: 0,
 };
 
-/** The nearest moving car to a point within `radius`, or null: panics pedestrians, and hits you. */
+/**
+ * The nearest moving car to a point within `radius`, or null: panics pedestrians, and hits you.
+ */
 world.carsNear = (x, y, radius) => {
   let best = null;
   let bestD = radius * radius;
@@ -160,7 +162,7 @@ world.onPickup = (kind) => {
   }
 };
 
-// --- Callbacks: the seams the modules report through --------------------------------------------
+// --- Callbacks: the seams the modules report through -------------------------------------------
 
 /** Heat moved: a toast for the reason, and the star count the HUD reads off `world`. */
 function handleWanted(level, reason, delta) {

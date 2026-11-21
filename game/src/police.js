@@ -1,12 +1,5 @@
-// The law in Solmar, in three stacked layers that only speak downward:
-//
-//   heat      the whole stars on the board, the fraction banked toward the next, and the cooldown
-//   dispatch  how large a response the heat is worth and where a unit may step onto the map
-//   pursuit   what a single officer or a single cruiser does with one step
-//
-// Nothing here draws, writes to a HUD or touches money. Officers and cruisers are plain objects so
-// render.js can read them straight off the array (a cruiser hides its body under `unit.car`). The
-// callback quartet onWanted / onArrest / onToast / onRam is the only path back into main.js.
+// The law in Solmar — wanted stars, patrol units, pursuit, arrest, and cooldown.
+// Exports: MAX_STARS, createPolice, getWanted, isWanted, addWanted, clearWanted, updatePolice
 
 import { angleDelta, clamp, distance, resolveCircleRect } from './utils.js';
 import { carsTouching, createCar, driveCar, moveCar } from './vehicles.js';
@@ -15,36 +8,32 @@ import { policeFire } from './combat.js';
 /** Five stars is the whole scale. */
 export const MAX_STARS = 5;
 
-/**
- * Heat tuning. `quietFor` is the grace window after a crime before any countdown runs; `coolFor`
- * the hidden seconds that buy a star back; `seenRecovery` how quickly that countdown unwinds while
- * a unit still has eyes on the player; `carSightBonus` the extra reach a cruiser's lights give.
- */
+/** Heat tuning. */
 const HEAT = {
-  quietFor: 5,
-  coolFor: 9,
-  seenRadius: 430,
-  carSightBonus: 90,
-  seenRecovery: 0.8,
+  quietFor: 5,       // grace seconds after a crime before cooldown starts
+  coolFor: 9,        // hidden seconds to shed one star while unseen
+  seenRadius: 430,   // max distance a unit can see the player
+  carSightBonus: 90, // extra sight from cruiser lights
+  seenRecovery: 0.8, // cooldown unwinds this fast while seen
 };
 
-/** A patrolman on foot: a touch quicker than a walk, a touch slower than a run, short reach. */
+/** Foot patrol constants. */
 const FOOT = {
   speed: 188,
   radius: 9,
   hp: 58,
   arrestReach: 17,
   max: 7,
-  wallFollow: 2.2, // tan of the lean along an obstacle: >1 means more sideways than forward
-  slidePatience: 0.35, // seconds without progress before a pocketed officer commits to backing out
-  backOut: 0.6, // how long that retreat lasts — long enough to clear the mouth of a pocket
+  wallFollow: 2.2,
+  slidePatience: 0.35,
+  backOut: 0.6,
   staggerShare: 0.25,
-  fireFrom: 4,
+  fireFrom: 4,        // star level when officers shoot
   fireRange: 340,
-  fireGap: [1.7, 2.6],
+  fireGap: [1.7, 2.6], // random fire interval
 };
 
-/** The cruiser: arrives off-screen, shunts a fleeing car, leaves a man at the kerb. */
+/** Cruiser constants. */
 const CRUISER = {
   max: 3,
   gap: 1.1,
@@ -66,22 +55,22 @@ const CRUISER = {
 
 const PATROL_PAINT = '#243252';
 
-/** Build the wanted state. `city` supplies station and road grid, `rng` places arrivals. */
+/** Build the wanted state. `city` supplies station/road grid, `rng` places arrivals. */
 export function createPolice(city, rng, options = {}) {
   return {
     city,
     rng,
-    level: 0, // whole stars, 0 .. MAX_STARS
-    progress: 0, // fraction of the next star already banked
-    quiet: HEAT.quietFor, // seconds since the last crime
-    cool: 0, // hidden seconds banked toward losing a star
-    seen: true, // does the force have eyes on the player right now?
+    level: 0,           // whole stars 0..MAX_STARS
+    progress: 0,        // fraction toward next star
+    quiet: HEAT.quietFor,
+    cool: 0,
+    seen: true,
     officers: [],
     cars: [],
     station: stationFor(city),
     spawnTimer: 0,
     time: 0,
-    flash: 0, // 0..1 sawtooth driving the light bar and the HUD blink
+    flash: 0,           // 0..1 sawtooth for light bar / HUD blink
     arrests: 0,
     onWanted: options.onWanted ?? null,
     onArrest: options.onArrest ?? null,
@@ -90,22 +79,17 @@ export function createPolice(city, rng, options = {}) {
   };
 }
 
-// --- Heat -------------------------------------------------------------------------------------
-
-/** Stars on the board right now; zero means a clean player. */
+/** Stars on the board right now; zero means clean. */
 export function getWanted(police) {
   return police.level;
 }
 
-/** True while at least one unit has a reason to look for the player. */
+/** True while at least one star is active. */
 export function isWanted(police) {
   return police.level > 0;
 }
 
-/**
- * Add heat. One whole star per unit by default; fractional amounts let a run of small offences add
- * up to one. The first offence off a clean slate always costs a full star and banks the remainder.
- */
+/** Add heat. One whole star per unit by default; fractions bank toward the next. */
 export function addWanted(police, amount = 1, reason = '') {
   const gain = Number(amount);
   if (!(gain > 0)) return police.level;
@@ -121,7 +105,7 @@ export function addWanted(police, amount = 1, reason = '') {
   return police.level;
 }
 
-/** Pour heat into the meter, whole stars at a time, capped at the top. */
+/** Pour heat into the meter, whole stars at a time, capped at top. */
 function bank(police, gain) {
   if (police.level === 0) {
     police.level = 1;
@@ -137,7 +121,7 @@ function bank(police, gain) {
   if (police.level >= MAX_STARS) police.progress = 0;
 }
 
-/** Wipe the board: no stars, every unit sent home. `silent` skips the callback. */
+/** Wipe the board: no stars, every unit sent home. `silent` skips callback. */
 export function clearWanted(police, silent = false) {
   const had = police.level > 0;
 
@@ -151,22 +135,19 @@ export function clearWanted(police, silent = false) {
   return police.level;
 }
 
-// --- The step ---------------------------------------------------------------------------------
-
-/** One fixed step: cooling, roll call, the men on foot, the cruisers, their return fire. */
+/** One fixed step: cooling, roll call, foot officers, cruisers, return fire. */
 export function updatePolice(police, world, dt) {
   police.time += dt;
   police.flash = (police.flash + dt) % 1;
   police.quiet += dt;
 
   if (police.level === 0) {
-    // A clean player is nobody's business; anything still out there goes home.
     if (police.officers.length || police.cars.length) sendHome(police);
     return;
   }
 
   police.seen = watched(police, world.player);
-  if (bleed(police, dt)) return; // the last star went out on this step
+  if (bleed(police, dt)) return; // chase ended this step
 
   police.spawnTimer = Math.max(0, police.spawnTimer - dt);
   rollCall(police, world);
@@ -175,13 +156,9 @@ export function updatePolice(police, world, dt) {
   returnFire(police, world, dt);
 }
 
-/**
- * Shed a star while the player stays out of sight. True when the chase ended on this step, which
- * tells updatePolice to stop before it moves units that no longer exist.
- */
+/** Shed a star while player stays out of sight. True when chase ended this step. */
 function bleed(police, dt) {
   if (police.seen) {
-    // Back in view: the countdown unwinds, but the crime is still recent enough to count.
     police.cool = Math.max(0, police.cool - dt * HEAT.seenRecovery);
     return false;
   }
@@ -205,9 +182,7 @@ function bleed(police, dt) {
   return true;
 }
 
-// --- Station and road entries -----------------------------------------------------------------
-
-/** The station is the lot nearest downtown, or the middle block when the seed has no lots. */
+/** Station is the lot nearest downtown, or middle block if no lots. */
 function stationFor(city) {
   let spot = null;
   let nearest = Infinity;
@@ -242,10 +217,7 @@ function stationFor(city) {
   };
 }
 
-/**
- * A point on a street centre line between `minR` and `maxR` of (px, py). Fifty rolls against the
- * grid, then a slide along the nearest avenue so a spawn can never fail outright.
- */
+/** Road entry point between minR and maxR of (px, py). */
 function roadEntry(city, rng, px, py, minR, maxR) {
   for (let attempt = 0; attempt < 50; attempt += 1) {
     const across = rng.chance(0.5);
@@ -264,9 +236,7 @@ function roadEntry(city, rng, px, py, minR, maxR) {
   return { x: avenue, y: clamp(py + drift, 80, city.height - 80) };
 }
 
-// --- Muster -----------------------------------------------------------------------------------
-
-/** A cruiser plus the book-keeping its driver needs: deployment, un-sticking, ram timing. */
+/** Build a cruiser unit with book-keeping. */
 function musterCruiser(police, player) {
   const spot = roadEntry(police.city, police.rng, player.x, player.y, 480, 900);
   const car = createCar(
@@ -291,7 +261,7 @@ function musterCruiser(police, player) {
   };
 }
 
-/** One officer, sworn in wherever the dispatcher aimed or the cruiser stopped. */
+/** Build a foot officer at given position. */
 function musterOfficer(police, player, x, y) {
   const rng = police.rng;
 
@@ -313,14 +283,14 @@ function musterOfficer(police, player, x, y) {
   };
 }
 
-/** Everyone home: the street empties and the next chase starts from nothing. */
+/** Everyone home: street empties. */
 function sendHome(police) {
   police.officers = [];
   police.cars = [];
   police.spawnTimer = 0;
 }
 
-/** Does any unit have the player in view? A cruiser's lights reach further than a man. */
+/** Does any unit have player in view? Cruiser lights reach further. */
 function watched(police, player) {
   for (const officer of police.officers) {
     if (distance(officer.x, officer.y, player.x, player.y) < HEAT.seenRadius) return true;
@@ -332,10 +302,7 @@ function watched(police, player) {
   return false;
 }
 
-/**
- * How many units the star count is worth. One cruiser per single star, a second at three, a third
- * at five; foot patrols only take the pavement from two stars up.
- */
+/** How many units the star count warrants. */
 function rollCall(police, world) {
   const player = world.player;
   cull(police, player);
@@ -358,7 +325,7 @@ function rollCall(police, world) {
   }
 }
 
-/** Retire the dead, and anything far enough behind to be irrelevant. */
+/** Retire dead and distant units. */
 function cull(police, player) {
   police.cars = police.cars.filter(
     (unit) => distance(unit.car.x, unit.car.y, player.x, player.y) < CRUISER.retireBeyond,
@@ -369,16 +336,14 @@ function cull(police, player) {
   );
 }
 
-// --- Officers on foot -------------------------------------------------------------------------
-
-/** A round collider becomes its bounding box, so one push-out routine serves both shapes. */
+/** Round collider -> bounding box. */
 function shapeOf(collider) {
   return collider.kind === 'circle'
     ? { x: collider.x - collider.r, y: collider.y - collider.r, w: collider.r * 2, h: collider.r * 2 }
     : collider;
 }
 
-/** Walk every officer in, sidestep what they hit, and make the arrest if they get close. */
+/** Walk officers in, sidestep obstacles, arrest if close. */
 function walkTheBeat(police, world, dt) {
   const player = world.player;
 
@@ -398,9 +363,6 @@ function walkTheBeat(police, world, dt) {
 
     const pace = officer.stagger > 0 ? officer.speed * FOOT.staggerShare : officer.speed;
 
-    // Steering: straight at the player when the pavement is clear, along the obstacle when it is
-    // not. The side chosen is held for a beat so a long facade is worked along rather than
-    // shuttled against.
     const nav = clearWalk(police.city, officer, nx, ny, pace, dt)
       ? { x: nx, y: ny }
       : slideAround(police.city, officer, nx, ny, pace, dt);
@@ -416,7 +378,7 @@ function walkTheBeat(police, world, dt) {
 
     settle(officer, police.city, FOOT.radius);
 
-    // Caught: a man on foot can only ever arrest someone else on foot.
+    // Arrest: only on foot vs on foot.
     if (!player.car && gap < FOOT.arrestReach + player.radius) {
       bust(police, world);
       return;
@@ -424,7 +386,7 @@ function walkTheBeat(police, world, dt) {
   }
 }
 
-/** Would a step of `pace * dt` along (nx, ny) be clear of walls, trunks and water? */
+/** Test if a step ahead is clear of walls, trunks, water. */
 function clearWalk(city, body, nx, ny, pace, dt) {
   const step = Math.max(pace * dt, 2);
   const ahead = { x: body.x + nx * (step + FOOT.radius), y: body.y + ny * (step + FOOT.radius) };
@@ -436,22 +398,10 @@ function clearWalk(city, body, nx, ny, pace, dt) {
   return true;
 }
 
-/**
- * A heading that gets an officer around whatever blocks the way.
- *
- * The straight line is preferred while it is clear. Once something is in the way the officer picks
- * an edge and follows it — mostly sideways, with a little inward lean so it keeps closing — and it
- * stays on that edge until the straight line opens again. Committing to one side is the point:
- * re-probing for the smallest clear turn every step makes a body oscillate in front of a wide wall
- * instead of walking along it.
- *
- * A body in a concave pocket can make no progress along either edge at all. That is what the
- * retreat is for, and it is the only case where an officer gives up ground.
- */
+/** Slide around obstacles: follow committed edge, switch if other opens, retreat if pocketed. */
 function slideAround(city, officer, nx, ny, pace, dt) {
   const along = FOOT.wallFollow;
 
-  // Follow the committed edge: mostly sideways, slightly inward, tracing the obstacle.
   const sideways = { x: nx - ny * officer.slideSide * along, y: ny + nx * officer.slideSide * along };
   const len = Math.hypot(sideways.x, sideways.y) || 1;
   const edge = { x: sideways.x / len, y: sideways.y / len };
@@ -461,12 +411,7 @@ function slideAround(city, officer, nx, ny, pace, dt) {
     return edge;
   }
 
-  // That edge is blocked too; try the other one and switch if it opens up. This is how an officer
-  // rounds a corner that turns the wrong way for the side it happened to pick.
-  const mirrored = {
-    x: nx + ny * officer.slideSide * along,
-    y: ny - nx * officer.slideSide * along,
-  };
+  const mirrored = { x: nx + ny * officer.slideSide * along, y: ny - nx * officer.slideSide * along };
   const mLen = Math.hypot(mirrored.x, mirrored.y) || 1;
   const other = { x: mirrored.x / mLen, y: mirrored.y / mLen };
 
@@ -476,9 +421,6 @@ function slideAround(city, officer, nx, ny, pace, dt) {
     return other;
   }
 
-  // Both edges blocked: a concave pocket. The only way out is backwards, and the retreat is held
-  // for a moment rather than recomputed each step — stepping back just far enough to reopen the
-  // edge only walks the officer straight back into the same pocket.
   if (officer.backTimer > 0) {
     officer.backTimer = Math.max(0, officer.backTimer - dt);
     const back = { x: -nx, y: -ny };
@@ -490,14 +432,13 @@ function slideAround(city, officer, nx, ny, pace, dt) {
   if (officer.slideDry > FOOT.slidePatience) {
     officer.slideDry = 0;
     officer.backTimer = FOOT.backOut;
-    officer.slideSide = -officer.slideSide; // come at the pocket from the other flank next time
+    officer.slideSide = -officer.slideSide;
   }
 
-  // Between retreats: hold, and let the next step try again with fresh geometry.
   return { x: 0, y: 0 };
 }
 
-/** Push a walking body clear of walls and trunks. True when it had to be moved. */
+/** Push walking body clear of walls/trunks/water. */
 function settle(body, city, radius) {
   let moved = false;
 
@@ -520,7 +461,7 @@ function settle(body, city, radius) {
   return moved;
 }
 
-/** Hands on the player: the heat is wiped and main.js turns the arrest into a screen. */
+/** Arrest: wipe heat, send units home, callback. */
 function bust(police, world) {
   police.arrests += 1;
   police.level = 0;
@@ -536,9 +477,7 @@ function bust(police, world) {
   police.onWanted?.(0, 'Busted', -1);
 }
 
-// --- Cruisers ---------------------------------------------------------------------------------
-
-/** Drive the cruisers at the player, then keep them from parking inside one another. */
+/** Drive cruisers at player, keep them separated. */
 function runCruisers(police, world, dt) {
   for (const unit of police.cars) {
     hunt(police, unit, world.player, dt);
@@ -546,7 +485,7 @@ function runCruisers(police, world, dt) {
   spread(police.cars);
 }
 
-/** One cruiser: close in, drop a man beside a walking player, shunt a driving one. */
+/** One cruiser: close in, deploy officer near walking player, ram driving player. */
 function hunt(police, unit, player, dt) {
   const car = unit.car;
   const dx = player.x - car.x;
@@ -554,7 +493,7 @@ function hunt(police, unit, player, dt) {
   const gap = Math.hypot(dx, dy) || 1;
   unit.ramCooldown = Math.max(0, unit.ramCooldown - dt);
 
-  // Pull alongside a player on foot and put an officer out to cover the pavement.
+  // Deploy officer alongside player on foot.
   if (!unit.deployed && !player.car && gap < CRUISER.deployWithin) {
     unit.deployed = true;
     const flank = Math.atan2(dy, dx) + Math.PI / 2;
@@ -586,7 +525,7 @@ function hunt(police, unit, player, dt) {
     unit.stuck = 0;
   }
 
-  // Ramming: the player's car keeps a share of its speed and the body is shoved with it.
+  // Ram player's car.
   if (player.car && carsTouching(player.car, car) && unit.ramCooldown <= 0) {
     unit.ramCooldown = CRUISER.ramCooldown;
     const speed = Math.abs(player.car.speed);
@@ -601,7 +540,7 @@ function hunt(police, unit, player, dt) {
   }
 }
 
-/** Keep a body's width between cruisers, so a pile-up can never box the player in. */
+/** Keep cruisers separated so they don't pile up. */
 function spread(units) {
   for (let i = 0; i < units.length; i += 1) {
     for (let j = i + 1; j < units.length; j += 1) {
@@ -624,13 +563,7 @@ function spread(units) {
   }
 }
 
-// --- Return fire ------------------------------------------------------------------------------
-
-/**
- * From four stars up, an officer on foot draws on a player who is also on foot. The round, its hit
- * chance and its damage all belong to combat.js; this only decides when one is worth sending and
- * how long the officer waits before the next.
- */
+/** Return fire: officers shoot at player on foot from 4 stars up. */
 function returnFire(police, world, dt) {
   const combat = world.combat;
   if (!combat || police.level < FOOT.fireFrom) return;

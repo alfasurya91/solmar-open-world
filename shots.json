@@ -1,6 +1,6 @@
-[
-  {"name": "1-chase.jpg", "query": "?shot=play"},
-  {"name": "2-city.jpg", "query": "?autostart=1"},
-  {"name": "3-mission.jpg", "query": "?autostart=1"},
-  {"name": "4-menu.jpg", "query": ""}
-]
+{
+  "1-chase.jpg": "shot=play",
+  "2-city.jpg": "autostart=1",
+  "3-mission.jpg": "autostart=1",
+  "4-menu.jpg": ""
+}
