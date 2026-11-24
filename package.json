@@ -1,0 +1,56 @@
+{
+  "name": "solmar-open-world",
+  "version": "1.0.0",
+  "description": "[![Solmar](https://make.fun/badge/gta6-01.svg)](https://make.fun/gta6-01) [![Rank](https://make.fun/badge/gta6-01/alfasurya91/solmar-open-world/rank.svg)](https://make.fun/gta6-01/alfasurya91/solmar-open-world) [![Reward](https://make.fun/badge/gta6-01/alfasurya91/solmar-open-world/reward.svg)](https://make.fun/gta6-01/alfasurya91/solmar-open-world) Solmar is a top-down 2D coastal-city game rendered into a single canvas: walk the sidewalks, hotwire parked cars, and outrun the police across a procedurally seeded open world with no engine, bundler, or build step.",
+  "author": "alfasurya91",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "main": "main.ts",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alfasurya91/solmar-open-world.git"
+  },
+  "homepage": "https://make.fun/bounty/gta6-01",
+  "keywords": [
+    "game",
+    "canvas",
+    "open-world",
+    "gta-like",
+    "canvas-game",
+    "html5-game",
+    "2d",
+    "top-down",
+    "driving",
+    "procedural-generation",
+    "browser-game",
+    "javascript",
+    "solmar",
+    "makefun",
+    "gta6-01"
+  ],
+  "files": [
+    "game/",
+    "screenshots/",
+    "vendor/",
+    "main.ts",
+    "serve.ts",
+    "README.md",
+    "LICENSE",
+    ".makefun/owner.json"
+  ],
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "scripts": {
+    "start": "node serve.ts",
+    "serve": "node serve.ts",
+    "dev": "node serve.ts",
+    "build": "node main.ts",
+    "check": "node --check serve.ts",
+    "test": "node -e \"const{readdirSync,readFileSync}=require('node:fs');const{execFileSync}=require('node:child_process');const d='game/src';const files=readdirSync(d).filter(n=>n.endsWith('.js'));for(const n of files)execFileSync(process.execPath,['--check',d+'/'+n],{stdio:'inherit'});if(!readFileSync('game/index.html','utf8').includes('./src/main.js'))throw new Error('game/index.html no longer loads ./src/main.js');console.log('ok: '+files.length+' game modules parse, index.html loads ./src/main.js')\""
+  },
+  "devDependencies": {
+    "puppeteer": "^25.18.1"
+  }
+}
